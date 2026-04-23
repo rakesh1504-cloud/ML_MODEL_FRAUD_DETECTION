@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data (keep directory stubs, ignore large files)
+data/raw/*.csv
+data/raw/*.parquet
+data/processed/*.pkl
+data/models/*.pkl
+data/models/*.json
+
+# Notebooks
+notebooks/.ipynb_checkpoints/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
