@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List
+from typing import Dict, List
 
 import pandas as pd
 
@@ -11,11 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 class FraudPredictor:
-    """End-to-end inference: raw IEEE-CIS transaction dict → fraud score + label."""
+    """End-to-end inference: raw IEEE-CIS transaction → fraud score + label."""
 
     def __init__(
         self,
-        model_filename: str = "random_forest.pkl",
+        model_filename: str = "lightgbm.pkl",
         preprocessor_path: str = "data/processed/preprocessor.pkl",
         threshold: float = 0.5,
     ):
@@ -30,13 +30,14 @@ class FraudPredictor:
         cls,
         trainer: ModelTrainer,
         preprocessor: DataPreprocessor,
+        feature_engineer: FeatureEngineer,
         threshold: float = 0.5,
     ) -> "FraudPredictor":
         obj = cls.__new__(cls)
         obj.threshold = threshold
         obj._trainer = trainer
         obj._preprocessor = preprocessor
-        obj._feature_engineer = FeatureEngineer()
+        obj._feature_engineer = feature_engineer
         return obj
 
     def predict_single(self, transaction: Dict) -> Dict:

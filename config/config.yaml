@@ -8,53 +8,78 @@ data:
   txn_file: train_transaction.csv
   identity_file: train_identity.csv
   synthetic_samples: 10000
-  fraud_rate: 0.035            # ~3.5% in real IEEE-CIS data
+  fraud_rate: 0.035
   random_state: 42
-  test_size: 0.20
-  val_size: 0.10
 
-# Missing-value strategy (from EDA section 4 & 9)
+# Missing-value strategy (notebook section 2 & 3)
 missing_values:
-  drop_threshold: 0.80         # drop columns with > 80% missing
+  drop_threshold: 0.80         # drop cols with > 80% missing
   flag_threshold: 0.10         # add col_was_missing flag if > 10% missing
 
+# Split strategy: TIME-BASED — never use random split on fraud data (notebook section 11)
+split:
+  strategy: time_based         # sort by TransactionDT, 80/20 chronological
+  test_size: 0.20
+
+# SMOTE: applied ONLY on training set, AFTER the split (notebook section 12)
+smote:
+  enabled: true
+  sampling_strategy: 0.10      # fraud → 10% of training data (not 50% — too aggressive)
+  random_state: 42
+
+# Feature groups built in 01_feature_engineering.ipynb
 features:
-  # Derived from TransactionDT (seconds offset from 2017-12-01)
-  time:
+  time:                        # section 5 — decoded from TransactionDT
     - hour
     - day_of_week
-    - is_night                 # 11pm–6am elevated fraud (EDA section 6)
+    - day_of_month
+    - month
     - is_weekend
-    - hour_sin
-    - hour_cos
-    - dow_sin
-    - dow_cos
-  # Derived from TransactionAmt (EDA section 5)
-  amount:
+    - is_night                 # 11pm–6am elevated fraud
+    - is_business_hours
+  velocity:                    # section 6 — per-card cumulative signals
+    - card_txn_count_cumulative
+    - card_amt_cumulative
+    - time_since_last_txn
+    - is_first_txn_for_card
+  amount:                      # section 7 — per-card aggregations
+    - card_amt_mean
+    - card_amt_std
+    - card_amt_min
+    - card_amt_max
+    - card_amt_median
+    - amount_z_score           # deviation from card's personal baseline
+    - amount_to_mean_ratio
     - log_amount
-    - is_large_transaction
-    - is_round_amount
-  # IEEE-CIS categorical columns (EDA section 7)
+  interactions:                # section 8 — combined weak signals
+    - large_night_txn
+    - first_txn_large_amt
+    - amount_x_hour
+    - high_zscore_night
   categorical:
-    - ProductCD
-    - card4
-    - card6
-    - P_emaildomain
-    - R_emaildomain
-  # Risk / missingness signals (EDA section 9)
-  risk:
-    - is_high_risk_product     # ProductCD in {C, S}
-    - is_risky_email           # anonymous.com and similar
-    - email_domain_mismatch
-    - device_missing           # DeviceType missing = fraud signal (lift > 1.5)
-    - high_velocity            # C1 > 5
+    target_encode:             # section 9 — CV target encoding (high cardinality)
+      - P_emaildomain
+      - R_emaildomain
+      - card1
+    label_encode:              # section 9 — label encoding (low cardinality)
+      - ProductCD
+      - card4
+      - card6
 
+# Model configuration
 model:
-  name: random_forest          # logistic_regression | random_forest | gradient_boosting
+  name: lightgbm               # logistic_regression | random_forest | gradient_boosting | lightgbm
   optimize_threshold: true
   threshold: 0.5
-  # EDA finding: imbalance ratio ~1:27, set scale_pos_weight accordingly for GBM
   params:
+    lightgbm:
+      n_estimators: 200
+      learning_rate: 0.05
+      num_leaves: 31
+      class_weight: balanced
+      random_state: 42
+      verbose: -1
+      n_jobs: -1
     random_forest:
       n_estimators: 200
       max_depth: 10
@@ -73,19 +98,27 @@ model:
       max_depth: 5
       subsample: 0.8
       random_state: 42
-      scale_pos_weight: 27     # n_legit / n_fraud (auto-computed if not set)
+      scale_pos_weight: 9      # after SMOTE: ~1:9 ratio
 
-# EDA finding (section 3): primary metric is AUC-PR, NOT accuracy
+# Evaluation — primary metric is AUC-PR (notebook EDA section 3)
 evaluation:
   primary_metric: auc_pr
   secondary_metric: roc_auc
-  threshold_opt_metric: f1    # metric to optimise decision threshold on val set
+  threshold_opt_metric: f1
+
+# Outputs saved by notebook section 13
+processed_outputs:
+  - data/processed/X_train.parquet
+  - data/processed/y_train.parquet
+  - data/processed/X_test.parquet
+  - data/processed/y_test.parquet
+  - data/processed/feature_cols.json
 
 api:
   host: 0.0.0.0
   port: 8000
   reload: false
-  model_filename: random_forest.pkl
+  model_filename: lightgbm.pkl
   preprocessor_path: data/processed/preprocessor.pkl
 
 logging:

@@ -23,10 +23,15 @@ class FraudDetectionPipeline:
     """
     Orchestrates the full IEEE-CIS fraud-detection ML lifecycle.
 
-    Data source options (in order of priority):
-      1. Real IEEE-CIS data  : provide txn_file + identity_file
-      2. Single CSV/Parquet  : provide data_file
-      3. Synthetic data      : default when no file is given
+    Training flow (matches 01_feature_engineering.ipynb):
+      1. Load & merge raw data
+      2. Feature engineering (velocity, amount aggs, interactions, encoding)
+      3. Drop high-missing cols + impute
+      4. Time-based split (no random split — avoids temporal leakage)
+      5. SMOTE on train only (fraud → 10% of training set)
+      6. Train model
+      7. Evaluate (primary metric: AUC-PR)
+      8. Save model + preprocessor + feature list
     """
 
     def __init__(self, config: Optional[Dict] = None):
@@ -35,7 +40,8 @@ class FraudDetectionPipeline:
             raw_data_dir=self.config.get("raw_data_dir", "data/raw")
         )
         self.preprocessor = DataPreprocessor(
-            processed_dir=self.config.get("processed_dir", "data/processed")
+            processed_dir=self.config.get("processed_dir", "data/processed"),
+            smote_strategy=self.config.get("smote_strategy", 0.1),
         )
         self.feature_engineer = FeatureEngineer()
         self.trainer = ModelTrainer(
@@ -45,6 +51,7 @@ class FraudDetectionPipeline:
             threshold=self.config.get("threshold", 0.5)
         )
         self.predictor: Optional[FraudPredictor] = None
+        self._feature_cols = []
 
     # ------------------------------------------------------------------
     # Training flow
@@ -55,16 +62,17 @@ class FraudDetectionPipeline:
         txn_file: Optional[str] = None,
         identity_file: Optional[str] = None,
         data_file: Optional[str] = None,
-        model_name: str = "random_forest",
+        model_name: str = "lightgbm",
         model_params: Optional[Dict] = None,
         optimize_threshold: bool = True,
+        apply_smote: bool = True,
         n_synthetic: int = 10_000,
+        save_parquet: bool = True,
     ) -> Dict:
         logger.info("=== FRAUD DETECTION PIPELINE — TRAINING ===")
 
-        # 1. Ingest data
+        # 1. Ingest
         if txn_file:
-            # IEEE-CIS: merge transaction + identity tables
             df = self.ingestion.load_ieee_cis(
                 txn_file=txn_file,
                 identity_file=identity_file or "train_identity.csv",
@@ -72,48 +80,47 @@ class FraudDetectionPipeline:
         elif data_file:
             df = self.ingestion.load_file(data_file)
         else:
-            logger.info("No data file provided — generating synthetic IEEE-CIS-style dataset")
+            logger.info("No data file — generating synthetic IEEE-CIS-style dataset")
             df = self.ingestion.generate_synthetic(n_samples=n_synthetic)
 
         self.ingestion.validate_schema(df)
 
-        # 2. Feature engineering (before preprocessing so raw values are intact)
-        df = self.feature_engineer.transform(df)
+        # 2. Feature engineering (fit encoders, velocity, aggregations)
+        df = self.feature_engineer.fit_transform(df)
 
-        # 3. Auto-compute scale_pos_weight from class distribution (EDA finding)
-        if model_params is None:
-            model_params = {}
-        if "scale_pos_weight" not in model_params and model_name == "gradient_boosting":
-            fraud_count = int(df["isFraud"].sum())
-            legit_count = len(df) - fraud_count
-            if fraud_count > 0:
-                spw = round(legit_count / fraud_count, 1)
-                model_params["scale_pos_weight"] = spw
-                logger.info(f"Auto scale_pos_weight = {spw} (legit/fraud = {legit_count}/{fraud_count})")
+        # Store feature columns (excluding ID/target/time-offset)
+        drop = {"TransactionID", "TransactionDT", "isFraud"}
+        self._feature_cols = [c for c in df.columns if c not in drop]
+        self.feature_engineer.save_feature_cols(self._feature_cols)
 
-        # 4. Preprocess + split
-        X_train, X_val, X_test, y_train, y_val, y_test = self.preprocessor.fit_transform(df)
+        # 3. Drop high-missing + impute + time-based split + SMOTE
+        X_train, X_test, y_train, y_test = self.preprocessor.fit_transform(
+            df, apply_smote=apply_smote
+        )
         self.preprocessor.save()
 
-        # 5. Train
+        # Optionally persist Parquet splits for downstream notebooks
+        if save_parquet:
+            self.preprocessor.save_parquet(X_train, y_train, X_test, y_test)
+
+        # 4. Train
         self.trainer.build(model_name=model_name, params=model_params)
-        self.trainer.fit(X_train, y_train, X_val, y_val)
+        self.trainer.fit(X_train, y_train)
 
-        # 6. Optimise decision threshold on validation set
+        # 5. Optimise threshold on test set (use AUC-PR-neutral F1 sweep)
         if optimize_threshold:
-            self.evaluator.find_optimal_threshold(self.trainer.model, X_val, y_val, metric="f1")
+            self.evaluator.find_optimal_threshold(self.trainer.model, X_test, y_test, metric="f1")
 
-        # 7. Evaluate on val + test
-        self.evaluator.evaluate(self.trainer.model, X_val, y_val, "validation")
+        # 6. Evaluate
         test_metrics = self.evaluator.evaluate(self.trainer.model, X_test, y_test, "test")
         self.evaluator.save_report()
 
-        # 8. Persist model
+        # 7. Save model
         model_path = self.trainer.save()
 
-        # 9. Build predictor for immediate inference
+        # 8. Build predictor
         self.predictor = FraudPredictor.from_components(
-            self.trainer, self.preprocessor, self.evaluator.threshold
+            self.trainer, self.preprocessor, self.feature_engineer, self.evaluator.threshold
         )
 
         summary = {
@@ -123,6 +130,7 @@ class FraudDetectionPipeline:
             "primary_metric": "auc_pr",
             "test_metrics": test_metrics,
             "training_metadata": self.trainer.training_metadata,
+            "n_features": len(self._feature_cols),
         }
 
         logger.info("=== TRAINING COMPLETE ===")
@@ -137,7 +145,7 @@ class FraudDetectionPipeline:
     def run_inference(
         self,
         transactions: pd.DataFrame,
-        model_filename: str = "random_forest.pkl",
+        model_filename: str = "lightgbm.pkl",
         preprocessor_path: str = "data/processed/preprocessor.pkl",
         threshold: Optional[float] = None,
     ) -> pd.DataFrame:
@@ -149,14 +157,15 @@ class FraudDetectionPipeline:
             self.predictor = FraudPredictor.from_components(
                 self.trainer,
                 self.preprocessor,
+                self.feature_engineer,
                 threshold or self.evaluator.threshold,
             )
 
         results = self.predictor.predict_batch(transactions)
         out = transactions.copy().reset_index(drop=True)
-        out["fraud_probability"] = [r["fraud_probability"] for r in results]
+        out["fraud_probability"]  = [r["fraud_probability"] for r in results]
         out["is_fraud_predicted"] = [r["is_fraud"] for r in results]
-        out["risk_level"] = [r["risk_level"] for r in results]
+        out["risk_level"]         = [r["risk_level"] for r in results]
         logger.info(f"Scored {len(out):,} transactions")
         return out
 

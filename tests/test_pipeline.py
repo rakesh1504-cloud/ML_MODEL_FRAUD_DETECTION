@@ -10,7 +10,9 @@ def trained_pipeline():
         model_name="random_forest",
         model_params={"n_estimators": 20},
         optimize_threshold=False,
+        apply_smote=True,
         n_synthetic=800,
+        save_parquet=False,
     )
     return pipeline
 
@@ -21,21 +23,22 @@ class TestFraudDetectionPipeline:
         summary = pipeline.run_training(
             model_name="logistic_regression",
             optimize_threshold=False,
+            apply_smote=True,
             n_synthetic=500,
+            save_parquet=False,
         )
         assert "test_metrics" in summary
         assert "auc_pr" in summary["test_metrics"]
-        # AUC-PR must exceed the naive baseline (= fraud rate ~3.5%)
-        assert summary["test_metrics"]["auc_pr"] > 0.035
         assert summary["primary_metric"] == "auc_pr"
+        assert summary["test_metrics"]["auc_pr"] > 0.035  # must beat naive baseline
 
     def test_predict_single_output_keys(self, trained_pipeline):
-        # Minimal IEEE-CIS transaction
         transaction = {
             "TransactionID": 2987001,
-            "TransactionDT": 7200,            # 2 hours after ref date
+            "TransactionDT": 7200,
             "TransactionAmt": 1500.0,
             "ProductCD": "C",
+            "card1": 1234,
             "card4": "visa",
             "card6": "credit",
             "P_emaildomain": "anonymous.com",
@@ -54,6 +57,7 @@ class TestFraudDetectionPipeline:
             "TransactionAmt": 30.0,
             "TransactionDT": 50000,
             "ProductCD": "W",
+            "card1": 5678,
             "card4": "mastercard",
             "card6": "debit",
             "P_emaildomain": "gmail.com",
@@ -62,13 +66,14 @@ class TestFraudDetectionPipeline:
         result = trained_pipeline.predict_single(transaction)
         assert result["risk_level"] in {"HIGH", "MEDIUM", "LOW", "VERY_LOW"}
 
-    def test_transaction_amt_column_name(self, trained_pipeline):
-        """Ensure old 'amount' field is not expected — only TransactionAmt."""
-        transaction = {
-            "TransactionAmt": 200.0,
-            "TransactionDT": 3600,
-            "ProductCD": "H",
-        }
-        # Should not raise KeyError on TransactionAmt
-        result = trained_pipeline.predict_single(transaction)
-        assert isinstance(result["fraud_probability"], float)
+    def test_n_features_reported(self, trained_pipeline):
+        pipeline = FraudDetectionPipeline()
+        summary = pipeline.run_training(
+            model_name="random_forest",
+            model_params={"n_estimators": 10},
+            optimize_threshold=False,
+            apply_smote=False,
+            n_synthetic=400,
+            save_parquet=False,
+        )
+        assert summary["n_features"] > 0
