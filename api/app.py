@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
@@ -10,38 +10,50 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Request / Response schemas
+# Request / Response schemas  (IEEE-CIS field names)
 # ---------------------------------------------------------------------------
 
 class TransactionRequest(BaseModel):
-    transaction_id: Optional[str] = Field(None, description="Unique transaction identifier")
-    amount: float = Field(..., gt=0, description="Transaction amount in USD")
-    hour: int = Field(..., ge=0, le=23, description="Hour of day (0–23)")
-    day_of_week: int = Field(..., ge=0, le=6, description="Day of week (0=Mon, 6=Sun)")
-    merchant_category: str = Field(..., description="Merchant category")
-    card_present: int = Field(..., ge=0, le=1, description="1 if physical card was used")
-    distance_from_home_km: float = Field(..., ge=0, description="Distance from cardholder home")
-    num_transactions_last_24h: int = Field(..., ge=0, description="Velocity: txns in last 24h")
-    is_foreign_transaction: int = Field(..., ge=0, le=1, description="1 if foreign transaction")
+    TransactionID: Optional[int] = Field(None, description="Unique transaction identifier")
+    TransactionDT: Optional[int] = Field(
+        None, description="Seconds offset from 2017-12-01 (IEEE-CIS reference date)"
+    )
+    TransactionAmt: float = Field(..., gt=0, description="Transaction amount in USD")
+    ProductCD: str = Field(..., description="Product code: W / H / C / S / R")
+    card4: Optional[str] = Field(None, description="Card network: visa / mastercard / etc.")
+    card6: Optional[str] = Field(None, description="Card type: debit / credit")
+    P_emaildomain: Optional[str] = Field(None, description="Purchaser email domain")
+    R_emaildomain: Optional[str] = Field(None, description="Recipient email domain")
+    addr1: Optional[float] = Field(None, description="Billing address zip code")
+    addr2: Optional[float] = Field(None, description="Billing address country code")
+    dist1: Optional[float] = Field(None, description="Distance from home address")
+    C1: Optional[float] = Field(None, description="Count of payment methods found (velocity proxy)")
+    D1: Optional[float] = Field(None, description="Time delta: days since last transaction")
+    DeviceType: Optional[str] = Field(None, description="desktop / mobile / None (missing = fraud signal)")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "transaction_id": "TXN00001234",
-                "amount": 350.00,
-                "hour": 2,
-                "day_of_week": 6,
-                "merchant_category": "online",
-                "card_present": 0,
-                "distance_from_home_km": 850.0,
-                "num_transactions_last_24h": 8,
-                "is_foreign_transaction": 1,
+                "TransactionID": 2987000,
+                "TransactionDT": 86400,
+                "TransactionAmt": 350.00,
+                "ProductCD": "C",
+                "card4": "visa",
+                "card6": "credit",
+                "P_emaildomain": "anonymous.com",
+                "R_emaildomain": "gmail.com",
+                "addr1": 299.0,
+                "addr2": 87.0,
+                "dist1": 890.0,
+                "C1": 8.0,
+                "D1": 1.0,
+                "DeviceType": None,
             }
         }
 
 
 class PredictionResponse(BaseModel):
-    transaction_id: Optional[str]
+    TransactionID: Optional[int]
     fraud_probability: float
     is_fraud: bool
     risk_level: str
@@ -71,8 +83,11 @@ def create_app(
     threshold: float = 0.5,
 ) -> FastAPI:
     app = FastAPI(
-        title="Fraud Detection API",
-        description="Real-time transaction fraud scoring powered by ML.",
+        title="IEEE-CIS Fraud Detection API",
+        description=(
+            "Real-time transaction fraud scoring. "
+            "Primary metric: AUC-PR (not accuracy — data is ~3.5% fraud)."
+        ),
         version="1.0.0",
     )
 
@@ -84,7 +99,7 @@ def create_app(
         nonlocal _model_loaded
         try:
             pipeline.trainer.load(model_filename)
-            pipeline.preprocessor = pipeline.preprocessor.load(preprocessor_path)
+            pipeline.preprocessor = DataPreprocessor.load(preprocessor_path)
             from src.models.predict import FraudPredictor
             pipeline.predictor = FraudPredictor.from_components(
                 pipeline.trainer, pipeline.preprocessor, threshold
@@ -105,14 +120,13 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Model not loaded. Run the training pipeline first.",
             )
-        transaction = req.model_dump()
         try:
-            result = pipeline.predictor.predict_single(transaction)
+            result = pipeline.predictor.predict_single(req.model_dump())
         except Exception as exc:
             logger.error(f"Prediction error: {exc}")
             raise HTTPException(status_code=500, detail=str(exc))
         return PredictionResponse(
-            transaction_id=req.transaction_id,
+            TransactionID=req.TransactionID,
             fraud_probability=result["fraud_probability"],
             is_fraud=result["is_fraud"],
             risk_level=result["risk_level"],
@@ -134,7 +148,7 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
         predictions = [
             PredictionResponse(
-                transaction_id=req.transactions[i].transaction_id,
+                TransactionID=req.transactions[i].TransactionID,
                 fraud_probability=r["fraud_probability"],
                 is_fraud=r["is_fraud"],
                 risk_level=r["risk_level"],
@@ -147,8 +161,9 @@ def create_app(
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Lazy import to avoid circular at startup
 # ---------------------------------------------------------------------------
+from src.data.preprocessing import DataPreprocessor  # noqa: E402
 
 app = create_app()
 

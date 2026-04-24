@@ -1,7 +1,6 @@
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 
-import numpy as np
 import pandas as pd
 
 from src.data.preprocessing import DataPreprocessor
@@ -12,17 +11,17 @@ logger = logging.getLogger(__name__)
 
 
 class FraudPredictor:
-    """End-to-end inference: raw transaction dict → fraud score + label."""
+    """End-to-end inference: raw IEEE-CIS transaction dict → fraud score + label."""
 
     def __init__(
         self,
-        model_path: str = "data/models/random_forest.pkl",
+        model_filename: str = "random_forest.pkl",
         preprocessor_path: str = "data/processed/preprocessor.pkl",
         threshold: float = 0.5,
     ):
         self.threshold = threshold
         self._trainer = ModelTrainer()
-        self._trainer.load(model_path.split("/")[-1])
+        self._trainer.load(model_filename)
         self._preprocessor = DataPreprocessor.load(preprocessor_path)
         self._feature_engineer = FeatureEngineer()
 
@@ -41,25 +40,24 @@ class FraudPredictor:
         return obj
 
     def predict_single(self, transaction: Dict) -> Dict:
-        df = pd.DataFrame([transaction])
-        result = self.predict_batch(df)
-        return result[0]
+        return self.predict_batch(pd.DataFrame([transaction]))[0]
 
     def predict_batch(self, df: pd.DataFrame) -> List[Dict]:
-        df_engineered = self._feature_engineer.transform(df)
-        X = self._preprocessor.transform(df_engineered)
+        df_eng = self._feature_engineer.transform(df)
+        X = self._preprocessor.transform(df_eng)
         proba = self._trainer.model.predict_proba(X)[:, 1]
         labels = (proba >= self.threshold).astype(int)
-        results = []
-        for i, (score, label) in enumerate(zip(proba, labels)):
-            results.append({
-                "fraud_probability": round(float(score), 4),
-                "is_fraud": bool(label),
-                "risk_level": self._risk_level(float(score)),
-            })
-        return results
+        return [
+            {
+                "fraud_probability": round(float(p), 4),
+                "is_fraud": bool(l),
+                "risk_level": self._risk_level(float(p)),
+            }
+            for p, l in zip(proba, labels)
+        ]
 
-    def _risk_level(self, score: float) -> str:
+    @staticmethod
+    def _risk_level(score: float) -> str:
         if score >= 0.8:
             return "HIGH"
         if score >= 0.5:
