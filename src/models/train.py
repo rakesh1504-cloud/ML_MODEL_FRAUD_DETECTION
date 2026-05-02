@@ -2,7 +2,7 @@ import logging
 import pickle
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -11,13 +11,20 @@ from sklearn.linear_model import LogisticRegression
 
 logger = logging.getLogger(__name__)
 
-# LightGBM is optional — used in notebook section 14 for feature importance preview
 try:
     from lightgbm import LGBMClassifier
+    import lightgbm as lgb
     _LGBM_AVAILABLE = True
 except ImportError:
     _LGBM_AVAILABLE = False
     logger.warning("LightGBM not installed. Run: pip install lightgbm")
+
+try:
+    from xgboost import XGBClassifier
+    _XGB_AVAILABLE = True
+except ImportError:
+    _XGB_AVAILABLE = False
+    logger.warning("XGBoost not installed. Run: pip install xgboost")
 
 SUPPORTED_MODELS: Dict[str, Any] = {
     "logistic_regression": LogisticRegression,
@@ -26,38 +33,36 @@ SUPPORTED_MODELS: Dict[str, Any] = {
 }
 if _LGBM_AVAILABLE:
     SUPPORTED_MODELS["lightgbm"] = LGBMClassifier
+if _XGB_AVAILABLE:
+    SUPPORTED_MODELS["xgboost"] = XGBClassifier
 
 DEFAULT_PARAMS: Dict[str, Dict] = {
     "logistic_regression": {
-        "C": 1.0,
-        "max_iter": 1000,
-        "class_weight": "balanced",
-        "random_state": 42,
+        "C": 1.0, "max_iter": 1000,
+        "class_weight": "balanced", "random_state": 42, "n_jobs": -1,
     },
     "random_forest": {
-        "n_estimators": 200,
-        "max_depth": 10,
-        "min_samples_leaf": 5,
-        "class_weight": "balanced",
-        "n_jobs": -1,
-        "random_state": 42,
+        "n_estimators": 200, "max_depth": 10, "min_samples_leaf": 5,
+        "class_weight": "balanced", "n_jobs": -1, "random_state": 42,
     },
     "gradient_boosting": {
-        "n_estimators": 200,
-        "learning_rate": 0.05,
-        "max_depth": 5,
-        "subsample": 0.8,
-        "random_state": 42,
+        "n_estimators": 200, "learning_rate": 0.05,
+        "max_depth": 5, "subsample": 0.8, "random_state": 42,
     },
-    # LightGBM defaults match notebook section 14 quick-check params
+    # Matches notebook section 3 untuned defaults
     "lightgbm": {
-        "n_estimators": 200,
-        "learning_rate": 0.05,
-        "num_leaves": 31,
-        "class_weight": "balanced",   # handles imbalance even after SMOTE
-        "random_state": 42,
-        "verbose": -1,
-        "n_jobs": -1,
+        "n_estimators": 1000, "learning_rate": 0.05,
+        "max_depth": 8, "num_leaves": 63,
+        "subsample": 0.8, "colsample_bytree": 0.8,
+        "min_child_samples": 20, "class_weight": "balanced",
+        "random_state": 42, "n_jobs": -1, "verbose": -1,
+    },
+    # Matches notebook section 4 untuned defaults
+    "xgboost": {
+        "n_estimators": 1000, "learning_rate": 0.05,
+        "max_depth": 6, "subsample": 0.8, "colsample_bytree": 0.8,
+        "eval_metric": "aucpr", "early_stopping_rounds": 50,
+        "random_state": 42, "n_jobs": -1, "verbosity": 0,
     },
 }
 
@@ -66,11 +71,11 @@ class ModelTrainer:
     """
     Train, persist, and reload fraud detection classifiers.
 
-    Supports: logistic_regression, random_forest, gradient_boosting, lightgbm.
+    Supports: logistic_regression, random_forest, gradient_boosting,
+              lightgbm (with early stopping), xgboost (with scale_pos_weight).
 
-    For gradient_boosting, pass scale_pos_weight in params to apply sample
-    weights equivalent to XGBoost/LightGBM scale_pos_weight behaviour.
-    (With SMOTE the imbalance is already reduced to ~1:9, so this is less critical.)
+    scale_pos_weight is auto-computed from y_train for XGBoost if not set.
+    For gradient_boosting it is applied as sample_weight during fit.
     """
 
     def __init__(self, model_dir: str = "data/models"):
@@ -83,12 +88,9 @@ class ModelTrainer:
 
     def build(self, model_name: str = "lightgbm", params: Optional[Dict] = None) -> Any:
         if model_name not in SUPPORTED_MODELS:
-            raise ValueError(
-                f"Unknown model '{model_name}'. Choose from {list(SUPPORTED_MODELS)}"
-            )
+            raise ValueError(f"Unknown model '{model_name}'. Choose from {list(SUPPORTED_MODELS)}")
         merged = {**DEFAULT_PARAMS.get(model_name, {}), **(params or {})}
         self._scale_pos_weight = merged.pop("scale_pos_weight", None)
-
         self.model = SUPPORTED_MODELS[model_name](**merged)
         self.model_name = model_name
         logger.info(f"Built {model_name} | params: {merged}")
@@ -104,17 +106,38 @@ class ModelTrainer:
         if self.model is None:
             raise RuntimeError("Call build() before fit()")
 
-        sample_weight = None
-        if self._scale_pos_weight and self.model_name == "gradient_boosting":
-            sample_weight = np.where(y_train == 1, self._scale_pos_weight, 1.0)
+        fit_kwargs: Dict = {}
+
+        # XGBoost: auto-compute scale_pos_weight from class ratio
+        if self.model_name == "xgboost":
+            spw = self._scale_pos_weight
+            if spw is None:
+                n_legit = int((y_train == 0).sum())
+                n_fraud = int(y_train.sum())
+                spw = round(n_legit / max(n_fraud, 1), 1)
+                logger.info(f"XGBoost scale_pos_weight auto-set to {spw}")
+            self.model.set_params(scale_pos_weight=spw)
+            if X_val is not None and y_val is not None:
+                fit_kwargs["eval_set"] = [(X_val, y_val)]
+                fit_kwargs["verbose"] = False
+
+        # LightGBM: early stopping via callbacks
+        if self.model_name == "lightgbm" and _LGBM_AVAILABLE:
+            if X_val is not None and y_val is not None:
+                fit_kwargs["eval_set"] = [(X_val, y_val)]
+                fit_kwargs["callbacks"] = [
+                    lgb.early_stopping(50, verbose=False),
+                    lgb.log_evaluation(period=-1),
+                ]
+
+        # GradientBoosting: scale_pos_weight as sample_weight
+        if self.model_name == "gradient_boosting" and self._scale_pos_weight:
+            fit_kwargs["sample_weight"] = np.where(
+                y_train == 1, self._scale_pos_weight, 1.0
+            )
 
         logger.info(f"Training {self.model_name} on {len(X_train):,} samples …")
         t0 = time.time()
-
-        fit_kwargs: Dict = {}
-        if sample_weight is not None:
-            fit_kwargs["sample_weight"] = sample_weight
-
         self.model.fit(X_train, y_train, **fit_kwargs)
         elapsed = time.time() - t0
 
@@ -124,7 +147,6 @@ class ModelTrainer:
             "n_features": X_train.shape[1],
             "train_time_s": round(elapsed, 2),
             "fraud_rate_train": round(float(y_train.mean()), 4),
-            "scale_pos_weight": self._scale_pos_weight,
         }
 
         if X_val is not None and y_val is not None:
@@ -140,7 +162,7 @@ class ModelTrainer:
         logger.info(f"Training complete in {elapsed:.1f}s")
         return self
 
-    def feature_importances(self, feature_names: list) -> pd.DataFrame:
+    def feature_importances(self, feature_names: List[str]) -> pd.DataFrame:
         if not hasattr(self.model, "feature_importances_"):
             raise AttributeError(f"{self.model_name} does not expose feature_importances_")
         return (
@@ -158,6 +180,14 @@ class ModelTrainer:
             pickle.dump({"model": self.model, "metadata": self.training_metadata}, f)
         logger.info(f"Model saved to {path}")
         return str(path)
+
+    def save_champion(self, path: str = "models/lgbm_champion.pkl") -> str:
+        """Save champion model to the top-level models/ dir (notebook section 12)."""
+        import joblib
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(self.model, path)
+        logger.info(f"Champion model saved to {path}")
+        return path
 
     def load(self, filename: str) -> "ModelTrainer":
         path = self.model_dir / filename

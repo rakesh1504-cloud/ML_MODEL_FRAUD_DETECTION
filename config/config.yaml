@@ -66,19 +66,38 @@ features:
       - card4
       - card6
 
-# Model configuration
+# Model configuration (notebook 02_modelling sections 2–4)
 model:
-  name: lightgbm               # logistic_regression | random_forest | gradient_boosting | lightgbm
-  optimize_threshold: true
+  name: lightgbm               # logistic_regression | random_forest | gradient_boosting | lightgbm | xgboost
   threshold: 0.5
   params:
     lightgbm:
-      n_estimators: 200
+      n_estimators: 1000
       learning_rate: 0.05
-      num_leaves: 31
+      max_depth: 8
+      num_leaves: 63
+      min_child_samples: 20
+      subsample: 0.8
+      colsample_bytree: 0.8
+      reg_alpha: 0.1
+      reg_lambda: 1.0
       class_weight: balanced
       random_state: 42
       verbose: -1
+      n_jobs: -1
+    xgboost:                   # notebook section 4 — scale_pos_weight auto-computed from class ratio
+      n_estimators: 1000
+      learning_rate: 0.05
+      max_depth: 8
+      min_child_weight: 10
+      subsample: 0.8
+      colsample_bytree: 0.8
+      reg_alpha: 0.1
+      reg_lambda: 1.0
+      eval_metric: aucpr
+      early_stopping_rounds: 50
+      random_state: 42
+      verbosity: 0
       n_jobs: -1
     random_forest:
       n_estimators: 200
@@ -98,15 +117,71 @@ model:
       max_depth: 5
       subsample: 0.8
       random_state: 42
-      scale_pos_weight: 9      # after SMOTE: ~1:9 ratio
+
+# Optuna hyperparameter tuning (notebook section 5)
+optuna:
+  enabled: false
+  n_trials: 50
+  direction: maximize           # maximise AUC-PR
+  study_name: lgbm_fraud_aucpr
+  search_space:
+    lightgbm:
+      n_estimators: [300, 1500]
+      learning_rate: [0.01, 0.2]
+      max_depth: [4, 12]
+      num_leaves: [20, 200]
+      min_child_samples: [10, 100]
+      subsample: [0.5, 1.0]
+      colsample_bytree: [0.5, 1.0]
+      reg_alpha: [1.0e-8, 10.0]
+      reg_lambda: [1.0e-8, 10.0]
+
+# Threshold strategy (notebook section 7)
+threshold:
+  strategy: recall_target       # recall_target | f1
+  recall_target: 0.90           # catch >= 90% of fraud; FN cost >> FP cost in banking
 
 # Evaluation — primary metric is AUC-PR (notebook EDA section 3)
 evaluation:
-  primary_metric: auc_pr
+  primary_metric: auc_pr        # AUC-PR; accuracy is misleading at 3.5% fraud rate
   secondary_metric: roc_auc
-  threshold_opt_metric: f1
+  report_path: data/external/eval_report.json
 
-# Outputs saved by notebook section 13
+# Business impact framing (notebook section 11)
+business_impact:
+  avg_fraud_amt: 250.0          # USD average fraudulent transaction amount
+  avg_legit_amt: 100.0          # USD average legitimate transaction amount (FP cost)
+
+# SHAP explainability (notebook section 10)
+shap:
+  enabled: false
+  sample_size: 2000
+  output_dir: data/external
+  plots:
+    - shap_beeswarm.png         # global feature importance (dot plot)
+    - shap_bar.png              # mean |SHAP| bar chart
+    - shap_waterfall.png        # single high-risk transaction explanation
+
+# MLflow experiment tracking (notebook section 13)
+mlflow:
+  enabled: false
+  experiment: fraud-detection-v1
+  tracking_uri: mlruns          # local default; set to DagsHub URI for remote
+  dagshub_user: null            # set to your DagsHub username to use remote tracking
+  dagshub_repo: fraud-detection
+  artefacts:
+    - data/external/shap_beeswarm.png
+    - data/external/shap_bar.png
+    - data/external/shap_waterfall.png
+    - data/external/model_comparison_pr.png
+    - data/external/model_threshold_tuning.png
+
+# Champion model outputs (notebook section 9 + 12)
+champion:
+  model_path: models/lgbm_champion.pkl
+  threshold_path: models/threshold.json
+
+# Outputs saved by preprocessing
 processed_outputs:
   - data/processed/X_train.parquet
   - data/processed/y_train.parquet
