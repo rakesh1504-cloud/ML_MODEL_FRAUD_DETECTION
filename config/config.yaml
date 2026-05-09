@@ -193,8 +193,38 @@ api:
   host: 0.0.0.0
   port: 8000
   reload: false
-  model_filename: lightgbm.pkl
-  preprocessor_path: data/processed/preprocessor.pkl
+  workers: 2
+  # src/api/main.py entry point — loads champion model directly
+  entry_point: src.api.main:app
+  model_path: models/lgbm_champion.pkl
+  threshold_path: models/threshold.json
+  features_path: data/processed/feature_cols.json
+
+# Data drift monitoring (notebook 03_deployment section 4)
+monitoring:
+  enabled: false
+  tool: evidently                 # evidently AI drift reports
+  reference_data: data/processed/X_train.parquet
+  current_data:   data/processed/X_test.parquet
+  n_cols: 30                      # top N numeric cols to compare
+  ref_sample: 5000
+  curr_sample: 2000
+  report_path: data/external/drift_report.html
+
+# Deployment targets (notebook 03_deployment section 5 + 8)
+deployment:
+  docker:
+    dockerfile: docker/Dockerfile
+    image_name: fraud-api
+    port: 8000
+  render:
+    config: render.yaml
+    service_name: fraud-detection-api
+    health_check: /health
+  streamlit:
+    app: streamlit_app/app.py
+    port: 8501
+    # Update API_URL in streamlit_app/app.py after Render deploy
 
 logging:
   level: INFO

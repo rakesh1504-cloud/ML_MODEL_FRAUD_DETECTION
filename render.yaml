@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: fraud-detection-api
+    env: docker
+    dockerfilePath: ./docker/Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8000
