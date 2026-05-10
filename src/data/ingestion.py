@@ -104,6 +104,8 @@ class DataIngestion:
                 "TransactionDT": dt,
                 "TransactionAmt": np.abs(rng.lognormal(4.5 * mult, 1.2, n)).clip(0.5, 20_000),
                 "ProductCD": rng.choice(["W", "H", "C", "S", "R"], n),
+                # card1: repeated card IDs so velocity features see multi-txn cards
+                "card1": rng.integers(1000, 1050, n),
                 "card4": rng.choice(["visa", "mastercard", "american express", "discover"], n),
                 "card6": rng.choice(["debit", "credit"], n),
                 "P_emaildomain": rng.choice(

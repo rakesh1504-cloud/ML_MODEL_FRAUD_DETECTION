@@ -71,6 +71,18 @@ class DataPreprocessor:
         self._fitted = True
 
         X, y = self._split_X_y(df)
+
+        # Drop remaining object columns — SMOTE and all estimators require numeric input.
+        # FeatureEngineer encodes known categoricals; any stragglers (e.g. DeviceType)
+        # are dropped here rather than silently causing SMOTE to crash.
+        obj_cols = X.select_dtypes(include="object").columns.tolist()
+        if obj_cols:
+            logger.warning(f"Dropping {len(obj_cols)} non-numeric columns before SMOTE: {obj_cols}")
+        self._obj_cols_to_drop = obj_cols
+        X = X.drop(columns=obj_cols)
+
+        self._fit_col_order = list(X.columns)  # store training column order for inference
+
         X_train, X_test, y_train, y_test = self._time_based_split(df, X, y, test_size)
 
         if apply_smote:
@@ -91,6 +103,16 @@ class DataPreprocessor:
         df = df.drop(columns=drop_present)
         df = self._impute(df, fit=False)
         X, _ = self._split_X_y(df)
+        # Drop the same object columns removed during fit_transform
+        obj_cols = getattr(self, "_obj_cols_to_drop", [])
+        X = X.drop(columns=[c for c in obj_cols if c in X.columns])
+        # Reindex to training column order — fills any gap columns with 0
+        fit_cols = getattr(self, "_fit_col_order", None)
+        if fit_cols is not None:
+            for c in fit_cols:
+                if c not in X.columns:
+                    X[c] = 0.0
+            X = X[fit_cols]
         return X
 
     def save_parquet(
@@ -157,16 +179,25 @@ class DataPreprocessor:
         num_present = [c for c in self.numeric_cols if c in df.columns]
         cat_present = [c for c in self.cat_cols if c in df.columns]
 
-        if num_present:
-            if fit:
+        if fit:
+            if num_present:
                 df[num_present] = self.num_imputer.fit_transform(df[num_present])
-            else:
-                df[num_present] = self.num_imputer.transform(df[num_present])
-
-        if cat_present:
-            if fit:
+            if cat_present:
                 df[cat_present] = self.cat_imputer.fit_transform(df[cat_present])
-            else:
+        else:
+            # At inference, fill any columns that were seen at fit time but are absent
+            # now (partial input dicts). Imputers require exactly the fitted feature set.
+            for col in self.numeric_cols:
+                if col not in df.columns:
+                    df[col] = np.nan
+            for col in self.cat_cols:
+                if col not in df.columns:
+                    df[col] = "missing"
+            num_present = self.numeric_cols  # all present now
+            cat_present = self.cat_cols
+            if num_present:
+                df[num_present] = self.num_imputer.transform(df[num_present])
+            if cat_present:
                 df[cat_present] = self.cat_imputer.transform(df[cat_present])
 
         remaining = df[feature_cols].isnull().sum().sum()

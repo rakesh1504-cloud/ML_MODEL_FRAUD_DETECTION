@@ -45,6 +45,11 @@ class FraudPredictor:
 
     def predict_batch(self, df: pd.DataFrame) -> List[Dict]:
         df_eng = self._feature_engineer.transform(df)
+        # Fill any columns expected by the preprocessor that are absent in this input.
+        # At training time those columns existed; at inference they may not be provided.
+        for col in getattr(self._preprocessor, "numeric_cols", []):
+            if col not in df_eng.columns:
+                df_eng[col] = float("nan")
         X = self._preprocessor.transform(df_eng)
         proba = self._trainer.model.predict_proba(X)[:, 1]
         labels = (proba >= self.threshold).astype(int)

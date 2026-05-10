@@ -257,7 +257,7 @@ class FeatureEngineer:
 
     def _target_encode_cv(self, df: pd.DataFrame, col: str, target: str = "isFraud") -> pd.Series:
         """CV target encoding to prevent data leakage (notebook section 9)."""
-        encoded = pd.Series(np.nan, index=df.index, dtype=np.float32)
+        encoded = pd.Series(np.nan, index=df.index, dtype=float)
         global_mean = float(df[target].mean())
         self._global_means[col] = global_mean
         kf = KFold(n_splits=self.n_splits, shuffle=False)

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -31,6 +32,12 @@ model_meta: Dict = {}
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _load_model()
+    yield
+
+
 app = FastAPI(
     title="Fraud Detection API",
     description=(
@@ -41,6 +48,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 
@@ -120,8 +128,7 @@ class ModelInfoResponse(BaseModel):
 # Startup: load model, threshold, features, SHAP explainer
 # ---------------------------------------------------------------------------
 
-@app.on_event("startup")
-def load_model():
+def _load_model():
     global model, threshold, feature_cols, explainer, model_meta
 
     if not os.path.exists(MODEL_PATH):
@@ -137,10 +144,15 @@ def load_model():
         threshold = model_meta.get("threshold", 0.5)
         logger.info(f"Threshold loaded: {threshold:.4f}")
 
-    if os.path.exists(FEATURES_PATH):
+    # Prefer feature names embedded in the model (LightGBM stores them after fit).
+    # Fall back to the JSON file only if the model doesn't expose them.
+    if hasattr(model, "feature_name_") and model.feature_name_:
+        feature_cols = list(model.feature_name_)
+        logger.info(f"Feature columns from model: {len(feature_cols)}")
+    elif os.path.exists(FEATURES_PATH):
         with open(FEATURES_PATH) as f:
             feature_cols = json.load(f)
-        logger.info(f"Feature columns loaded: {len(feature_cols)}")
+        logger.info(f"Feature columns from {FEATURES_PATH}: {len(feature_cols)}")
 
     # SHAP TreeExplainer — lazy import so shap is optional at import time
     try:
@@ -171,7 +183,10 @@ def _build_row(request: TransactionRequest) -> pd.DataFrame:
     row = {col: 0.0 for col in feature_cols}
     for field, value in request.model_dump().items():
         if field in row and value is not None:
-            row[field] = value
+            try:
+                row[field] = float(value)
+            except (ValueError, TypeError):
+                pass  # non-numeric request field — leave numeric default 0.0
     return pd.DataFrame([row])
 
 
