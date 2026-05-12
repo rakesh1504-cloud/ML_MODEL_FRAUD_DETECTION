@@ -1,7 +1,6 @@
 import logging
-import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -9,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from evidently.report import Report
-    from evidently.metric_preset import DataDriftPreset, DataQualityPreset
+    from evidently.metric_preset import DataDriftPreset
     from evidently.metrics import DatasetDriftMetric, DatasetMissingValuesMetric
     _EVIDENTLY_AVAILABLE = True
 except ImportError:

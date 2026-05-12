@@ -56,10 +56,10 @@ class FraudPredictor:
         return [
             {
                 "fraud_probability": round(float(p), 4),
-                "is_fraud": bool(l),
+                "is_fraud": bool(flag),
                 "risk_level": self._risk_level(float(p)),
             }
-            for p, l in zip(proba, labels)
+            for p, flag in zip(proba, labels)
         ]
 
     @staticmethod
