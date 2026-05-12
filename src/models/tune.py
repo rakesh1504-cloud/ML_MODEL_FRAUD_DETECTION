@@ -1,7 +1,6 @@
 import logging
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
-import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score
 

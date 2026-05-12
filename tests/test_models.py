@@ -1,5 +1,4 @@
 import pytest
-import pandas as pd
 
 from src.data.ingestion import DataIngestion
 from src.data.preprocessing import DataPreprocessor
@@ -103,7 +102,6 @@ class TestModelEvaluator:
         trainer = ModelTrainer(model_dir="data/models")
         trainer.build("random_forest", params={"n_estimators": 10})
         trainer.fit(X_train, y_train)
-        import numpy as np
         y_prob = trainer.model.predict_proba(X_test)[:, 1]
         thresh, prec, rec = ModelEvaluator.tune_threshold_by_recall(y_test, y_prob, recall_target=0.80)
         assert 0.0 <= thresh <= 1.0
