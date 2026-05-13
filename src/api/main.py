@@ -62,10 +62,11 @@ def load_model():
 @app.get("/health")
 def health():
     return {
-        "status"      : "ok",
-        "model_loaded": model is not None,
-        "threshold"   : threshold,
-        "n_features"  : len(feature_cols)
+        "status"        : "ok",
+        "model_loaded"  : model is not None,
+        "threshold"     : threshold,
+        "n_features"    : len(feature_cols),
+        "model_version" : "lgbm-v1.0"
     }
 
 
