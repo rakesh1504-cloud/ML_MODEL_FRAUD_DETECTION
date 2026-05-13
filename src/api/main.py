@@ -1,3 +1,5 @@
+
+
 import json, os, joblib
 from pathlib import Path
 import numpy as np
@@ -6,6 +8,15 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 import uvicorn
+import matplotlib
+
+os.environ["MPLBACKEND"] = "Agg"
+os.environ["MPLCONFIGDIR"] = "/tmp"
+os.environ["MATPLOTLIBRC"] = "/tmp"
+
+# Prevent matplotlib font cache from building
+
+matplotlib.use("Agg")
 
 app = FastAPI(
     title="Fraud Detection API",
