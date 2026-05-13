@@ -1,14 +1,14 @@
 
 
-import json, os, joblib
-from pathlib import Path
-import numpy as np
+import json
+import os
+import joblib
+
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 import uvicorn
-import matplotlib
 
 os.environ["MPLBACKEND"] = "Agg"
 os.environ["MPLCONFIGDIR"] = "/tmp"
